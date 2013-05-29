@@ -1,0 +1,1 @@
+foret.d: ../foret.c
