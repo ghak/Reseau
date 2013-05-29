@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <unistd.h>
 
+/*3636*/
+
 int sock ;
 struct sockaddr_in recv_addr ;
 
