@@ -1,1 +1,3 @@
-foret.d: ../foret.c
+foret.d: ../foret.c ../foret.h
+
+../foret.h:

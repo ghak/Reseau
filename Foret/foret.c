@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <math.h>
+#include "foret.h"
 
 //constante&variable reseau
 #define BUFFER 1024
@@ -15,36 +16,26 @@ struct sockaddr_in recv_addr;
 struct sockaddr_in exp_addr;
 int n, exp_len;
 char* buf;
+int nbClients = 10;
+int indexClient = 0;
+Client* clients;
 
 //variable lecture de fichier
 int tailleNom = 24;
 int nbIpemon = 0;
 
 //variable jeu
-typedef struct {
-	int feu;
-	int eau;
-	int electricite;
-	int plante;
-	int air;
-	int pierre;
-} AttDef;
-
-typedef struct {
-	char* nom;
-	int espece;
-	int niveauVie;
-	int niveauVieMax;
-	int experience;
-	int rapidite;
-	AttDef attaque;
-	AttDef defense;
-} Ipemon;
-
 int idn = 0;
 Ipemon* ipedia;
 
-void ouvertureLiaison() {
+int memeIP(struct sockaddr_in sin1, struct sockaddr_in sin2) {
+	int i;
+	i = ((sin1.sin_family == sin2.sin_family
+			&& sin1.sin_addr.s_addr == sin2.sin_addr.s_addr));
+	return i;
+}
+
+void ouvertureLiaison(int port) {
 	sock = socket(PF_INET, SOCK_DGRAM, 0); //creation d'une liaison
 	if (sock == -1) {
 		perror("socket()");
@@ -53,7 +44,7 @@ void ouvertureLiaison() {
 	bzero((char *) &recv_addr, sizeof recv_addr); //mise a zero de l'adresse de reception
 	recv_addr.sin_family = AF_INET;
 	recv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	recv_addr.sin_port = htons(5000);
+	recv_addr.sin_port = htons(port);
 	if (bind(sock, (struct sockaddr *) &recv_addr, sizeof recv_addr) == -1) { //assigne une adresse a sock
 		perror("bind()");
 		exit(1);
@@ -109,17 +100,13 @@ Ipemon* generationListe() {
 	return ipedia;
 }
 
-void debug(Ipemon ip){
+void debug(Ipemon ip) {
 	printf("%s:%d:%d:%d:%d:%d:(%d:%d:%d:%d:%d:%d):(%d:%d:%d:%d:%d:%d)\n",
-					ip.nom, ip.espece, ip.niveauVie,
-					ip.niveauVieMax, ip.experience,
-					ip.rapidite, ip.attaque.air,
-					ip.attaque.eau, ip.attaque.electricite,
-					ip.attaque.feu, ip.attaque.pierre,
-					ip.attaque.plante, ip.defense.air,
-					ip.defense.eau, ip.defense.electricite,
-					ip.defense.feu, ip.defense.pierre,
-					ip.defense.plante);
+			ip.nom, ip.espece, ip.niveauVie, ip.niveauVieMax, ip.experience,
+			ip.rapidite, ip.attaque.air, ip.attaque.eau, ip.attaque.electricite,
+			ip.attaque.feu, ip.attaque.pierre, ip.attaque.plante,
+			ip.defense.air, ip.defense.eau, ip.defense.electricite,
+			ip.defense.feu, ip.defense.pierre, ip.defense.plante);
 	fflush(stdout);
 }
 
@@ -134,21 +121,19 @@ Ipemon stringToIpemon(char* str) {
 	Ipemon ip;
 	int id;
 	sscanf(str, "%d:%d:%d:%d:%d:%d:(%d:%d:%d:%d:%d:%d):(%d:%d:%d:%d:%d:%d)",
-			&id, &ip.espece, &ip.niveauVie,
-			&ip.niveauVieMax, &ip.experience, &ip.rapidite,
-			&ip.attaque.air, &ip.attaque.eau,
-			&ip.attaque.electricite, &ip.attaque.feu,
-			&ip.attaque.pierre, &ip.attaque.plante,
-			&ip.defense.air, &ip.defense.eau,
-			&ip.defense.electricite, &ip.defense.feu,
-			&ip.defense.pierre, &ip.defense.plante);
+			&id, &ip.espece, &ip.niveauVie, &ip.niveauVieMax, &ip.experience,
+			&ip.rapidite, &ip.attaque.air, &ip.attaque.eau,
+			&ip.attaque.electricite, &ip.attaque.feu, &ip.attaque.pierre,
+			&ip.attaque.plante, &ip.defense.air, &ip.defense.eau,
+			&ip.defense.electricite, &ip.defense.feu, &ip.defense.pierre,
+			&ip.defense.plante);
 	ip.nom = ipedia[ip.espece - 1].nom;
 	return ip;
 }
 
 int diminutionVie(Ipemon ipA, Ipemon ipD) {
 	int d;
-	int dif = (ipA.experience + ipD.experience)/2;
+	int dif = (ipA.experience + ipD.experience) / 2;
 	if (!dif)
 		dif++; //pour eviter la division par 0
 	d = ((ipA.attaque.air * ipA.experience - ipD.defense.air * ipD.experience)
@@ -166,23 +151,124 @@ int diminutionVie(Ipemon ipA, Ipemon ipD) {
 	return d;
 }
 
-void combat(char* ps, int vl) {
-	Ipemon ipmnF, ipmnA;
-	int rand, flag = 1, degat = 0;
-	rand = random() % nbIpemon;
-	ipmnF = ipedia[rand];
-	bzero(buf, BUFFER);
-	sprintf(buf, "DUEL_OK foret %d", ipmnF.rapidite);
-	envoi(buf);
-	if (vl > ipmnF.rapidite) {
-		while (flag) {
-			bzero(buf, BUFFER);
-			buf = reception();
+int getClient(struct sockaddr_in addr) {
+	int i = 0;
+	while (i < nbClients) {
+		if (memeIP((clients[i].addr), addr)) {
+			return i;
+		}
+		i++;
+	}
+	return -1;
+}
+
+int getClient2(struct sockaddr_in addr, struct sockaddr_in* addrs) {
+	int i = 0;
+	while (i < nbClients) {
+		if (memeIP((addrs[i]), addr)) {
+			return i;
+		}
+		i++;
+	}
+	return -1;
+}
+
+void traitement(char* buf) {
+	//M1
+	int rand;
+	int indx;
+	if (strncmp(buf, "NOUVEAU", 7) == 0) {
+		idn++;
+		rand = random() % nbIpemon;
+		bzero(buf, BUFFER);
+		sprintf(buf,
+				"%d:%d:%d:%d:%d:%d:(%d:%d:%d:%d:%d:%d):(%d:%d:%d:%d:%d:%d)",
+				idn, ipedia[rand].espece, ipedia[rand].niveauVie,
+				ipedia[rand].niveauVieMax, ipedia[rand].experience,
+				ipedia[rand].rapidite, ipedia[rand].attaque.air,
+				ipedia[rand].attaque.eau, ipedia[rand].attaque.electricite,
+				ipedia[rand].attaque.feu, ipedia[rand].attaque.pierre,
+				ipedia[rand].attaque.plante, ipedia[rand].defense.air,
+				ipedia[rand].defense.eau, ipedia[rand].defense.electricite,
+				ipedia[rand].defense.feu, ipedia[rand].defense.pierre,
+				ipedia[rand].defense.plante);
+		envoi(buf);
+		printf("nouveau pokemon offert\n");
+	} //M2
+	else if (strncmp(buf, "DUEL_INIT", 9) == 0) {
+		char* pseudo = (char*) malloc(tailleNom);
+		int val;
+		int i = 0, flag = 0, y = 0;
+		while (buf[i] != '\0' && flag > -1) {
+			if (buf[i] == ' ') {
+				flag = !flag;
+				if (flag)
+					i++;
+				else {
+					pseudo[y] = '\0';
+					flag = -1;
+				};
+			};
+			if (flag > 0) {
+				pseudo[y] = buf[i];
+				y++;
+			}
+			i++;
+		}
+		val = atoi(buf + i);
+		//debug
+		printf("%s veut combattre et a envoyé la valeur %d\n", pseudo, val);
+		Ipemon ipmnF;
+		int rand;
+		rand = random() % nbIpemon;
+		ipmnF = ipedia[rand];
+		clients[indexClient].pseudo = pseudo;
+		clients[indexClient].addr = exp_addr;
+		clients[indexClient].ipemon = ipmnF;
+		indexClient++;
+		bzero(buf, BUFFER);
+		sprintf(buf, "DUEL_OK foret %d", ipmnF.rapidite);
+		envoi(buf);
+		if (ipmnF.rapidite > val) {
+			printf("ipemon foret plus rapide, %s attaque en premier\n",
+					ipmnF.nom);
+			sprintf(buf,
+					"%d:%d:%d:%d:%d:%d:(%d:%d:%d:%d:%d:%d):(%d:%d:%d:%d:%d:%d)",
+					idn, ipmnF.espece, ipmnF.niveauVie, ipmnF.niveauVieMax,
+					ipmnF.experience, ipmnF.rapidite, ipmnF.attaque.air,
+					ipmnF.attaque.eau, ipmnF.attaque.electricite,
+					ipmnF.attaque.feu, ipmnF.attaque.pierre,
+					ipmnF.attaque.plante, ipmnF.defense.air, ipmnF.defense.eau,
+					ipmnF.defense.electricite, ipmnF.defense.feu,
+					ipmnF.defense.pierre, ipmnF.defense.plante);
+			envoi(buf);
+		}
+	} //M3
+	else if (strstr(buf, "OK") != NULL) {
+
+	} //M4
+	else if (strstr(buf, "KO") != NULL) {
+		indx = getClient(exp_addr);
+		if (indx > -1) {
+			printf("%s a perdu\n", clients[indx].pseudo);
+			free(clients[indx].pseudo);
+			indexClient--;
+			clients[indx] = clients[indexClient];
+		} else
+			puts("somebody losts but we don't know who!!!!!?????");
+	} //M5
+	else {
+		Ipemon ipmnA, ipmnF;
+		indx = getClient(exp_addr);
+		if (indx > -1) {
+			int degat = 0;
 			ipmnA = stringToIpemon(buf);
-			degat = diminutionVie(ipmnA, ipmnF);
-			ipmnF.niveauVie -= degat;
-			printf("%d\n",ipmnF.niveauVie);
-			if ((ipmnF.niveauVie)>0) {
+			degat = diminutionVie(ipmnA, clients[indx].ipemon);
+			clients[indx].ipemon.niveauVie -= degat;
+			ipmnF = clients[indx].ipemon;
+			printf("%s a diminué de %d la vie de %s\n", clients[indx].pseudo,
+					degat, clients[indx].ipemon.nom);
+			if ((ipmnF.niveauVie) > 0) {
 				bzero(buf, BUFFER);
 				strcpy(buf, "0:A:OK");
 				envoi(buf);
@@ -199,19 +285,13 @@ void combat(char* ps, int vl) {
 						ipmnF.defense.plante);
 				envoi(buf);
 				bzero(buf, BUFFER);
-				buf = reception();
-				char* res = strstr(buf, "OK");
-				if (res == NULL) {
-					flag = 0;
-					puts("Adversaire a perdu");
-				}
 			} else {
 				idn++;
 				bzero(buf, BUFFER);
 				strcpy(buf, "0:A:KO");
 				envoi(buf);
 				bzero(buf, BUFFER);
-				ipmnF.niveauVie= ipmnF.niveauVieMax;
+				ipmnF.niveauVie = ipmnF.niveauVieMax;
 				sprintf(buf,
 						"%d:%d:%d:%d:%d:%d:(%d:%d:%d:%d:%d:%d):(%d:%d:%d:%d:%d:%d)",
 						idn, ipmnF.espece, ipmnF.niveauVie, ipmnF.niveauVieMax,
@@ -223,115 +303,87 @@ void combat(char* ps, int vl) {
 						ipmnF.defense.feu, ipmnF.defense.pierre,
 						ipmnF.defense.plante);
 				envoi(buf);
-				flag = 0;
+				printf("%s a remporté %s\n", clients[indx].pseudo,
+						clients[indx].ipemon.nom);
+				free(clients[indx].pseudo);
+				indexClient--;
+				clients[indx] = clients[indexClient];
 			}
-		}
-	} else {
-		while (flag) {
-			bzero(buf, BUFFER);
-			sprintf(buf,
-					"%d:%d:%d:%d:%d:%d:(%d:%d:%d:%d:%d:%d):(%d:%d:%d:%d:%d:%d)",
-					idn, ipmnF.espece, ipmnF.niveauVie, ipmnF.niveauVieMax,
-					ipmnF.experience, ipmnF.rapidite, ipmnF.attaque.air,
-					ipmnF.attaque.eau, ipmnF.attaque.electricite,
-					ipmnF.attaque.feu, ipmnF.attaque.pierre,
-					ipmnF.attaque.plante, ipmnF.defense.air, ipmnF.defense.eau,
-					ipmnF.defense.electricite, ipmnF.defense.feu,
-					ipmnF.defense.pierre, ipmnF.defense.plante);
-			envoi(buf);
-			bzero(buf, BUFFER);
-			buf = reception();
-			char* res = strstr(buf, "OK");
-			if (res == NULL) {
-				flag = 0;
-				puts("Adversaire a perdu");
-			} else {
-				bzero(buf, BUFFER);
-				buf = reception();
-				ipmnA = stringToIpemon(buf);
-				degat = diminutionVie(ipmnA, ipmnF);
-				ipmnF.niveauVie -= degat;
-				if (ipmnF.niveauVie > 0) {
-					bzero(buf, BUFFER);
-					strcpy(buf, "0:A:OK");
-					envoi(buf);
-				} else {
-					idn++;
-					bzero(buf, BUFFER);
-					strcpy(buf, "0:A:KO");
-					envoi(buf);
-					bzero(buf, BUFFER);
-					sprintf(buf,
-							"%d:%d:%d:%d:%d:%d:(%d:%d:%d:%d:%d:%d):(%d:%d:%d:%d:%d:%d)",
-							idn, ipmnF.espece, ipmnF.niveauVie,
-							ipmnF.niveauVieMax, ipmnF.experience,
-							ipmnF.rapidite, ipmnF.attaque.air,
-							ipmnF.attaque.eau, ipmnF.attaque.electricite,
-							ipmnF.attaque.feu, ipmnF.attaque.pierre,
-							ipmnF.attaque.plante, ipmnF.defense.air,
-							ipmnF.defense.eau, ipmnF.defense.electricite,
-							ipmnF.defense.feu, ipmnF.defense.pierre,
-							ipmnF.defense.plante);
-					envoi(buf);
-					flag = 0;
-				}
-
-			}
-
+		} else {
+			puts("pseudo inconue a tenté d'attaquer");
 		}
 	}
 }
 
-int main(int argc, char** argv) {
-	ipedia = generationListe();
-	ouvertureLiaison();
-	int rand;
-	while (1) {
-		buf = reception();
-		if (strncmp(buf, "NOUVEAU", 7) == 0) {
-			idn++;
-			rand = random() % nbIpemon;
-			bzero(buf, BUFFER);
-			sprintf(buf,
-					"%d:%d:%d:%d:%d:%d:(%d:%d:%d:%d:%d:%d):(%d:%d:%d:%d:%d:%d)",
-					idn, ipedia[rand].espece, ipedia[rand].niveauVie,
-					ipedia[rand].niveauVieMax, ipedia[rand].experience,
-					ipedia[rand].rapidite, ipedia[rand].attaque.air,
-					ipedia[rand].attaque.eau, ipedia[rand].attaque.electricite,
-					ipedia[rand].attaque.feu, ipedia[rand].attaque.pierre,
-					ipedia[rand].attaque.plante, ipedia[rand].defense.air,
-					ipedia[rand].defense.eau, ipedia[rand].defense.electricite,
-					ipedia[rand].defense.feu, ipedia[rand].defense.pierre,
-					ipedia[rand].defense.plante);
-			envoi(buf);
-		} else if (strncmp(buf, "DUEL_INIT", 9) == 0) {
-//debug
-			printf("%s\n", buf);
-			char* pseudo = (char*) malloc(tailleNom);
-			int val;
-			int i = 0, flag = 0, y = 0;
-			while (buf[i] != '\0' && flag > -1) {
-				if (buf[i] == ' ') {
-					flag = !flag;
-					if (flag)
-						i++;
-					else {
-						pseudo[y] = '\0';
-						flag = -1;
-					};
-				};
-				if (flag > 0) {
-					pseudo[y] = buf[i];
-					y++;
-				}
-				i++;
+void setTimeOut(int t){
+	struct timeval tv;
+			tv.tv_sec = 3600;
+			tv.tv_usec = 0;
+			if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv))
+					< 0) {
+				perror("Error");
 			}
-			val = atoi(buf + i);
-//debug
-			printf("%s,%d\n", pseudo, val);
-			combat(pseudo, val);
+}
+
+int main(int argc, char** argv) {
+	int c;
+	c = fork();
+	switch (c) {
+	case -1:
+		perror("fork()");
+		exit(2);
+		break;
+	case 0:
+		ouvertureLiaison(6000);
+		int max = 0;
+		int ind;
+		struct sockaddr_in* clients_Addr = (struct sockaddr_in*) malloc(nbClients * sizeof(struct sockaddr_in));
+		int* tabVal = (int*) malloc(nbClients * sizeof(int));
+		while (1) {
+			buf = reception();
+			printf("%s\n",buf);
+			if (strstr(buf,"init")) {
+				puts("new");
+				clients_Addr[max] = exp_addr;
+				bzero(buf, BUFFER);
+				strcpy(buf,"0");
+				tabVal[max]=0;
+				envoi(buf);
+				max++;
+			}else{
+				ind=getClient2(exp_addr, clients_Addr);
+				if(ind>-1){
+					int a=atoi(buf);
+					if((tabVal[ind]+1)== a){
+						bzero(buf, BUFFER);
+						a++;
+						sprintf(buf,"%d",a);
+						envoi(buf);
+						tabVal[ind]=a;
+					}else{
+						puts("des données on était perdu");
+						bzero(buf, BUFFER);
+						strcpy(buf,"WARNING");
+						envoi(buf);
+					}
+				}else{
+					puts("clients inconu et non initialiser");
+				}
+			}
 		}
+		close(sock);
+		return 0;
+		break;
+	default:
+		clients = (Client*) malloc(nbClients * sizeof(Client));
+		ipedia = generationListe();
+		ouvertureLiaison(5000);
+		while (1) {
+			buf = reception();
+			traitement(buf);
+		}
+		close(sock);
+		break;
 	}
-	close(sock);
 	return 0;
 }
